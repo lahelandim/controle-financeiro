@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Finanças">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Controle Financeiro</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="login" class="screen hidden">
+  <form id="loginForm" class="card login">
+    <h1>Controle Financeiro</h1>
+    <p class="muted">Entre para ver seus dados em qualquer aparelho.</p>
+    <label>E-mail <input type="email" id="email" autocomplete="username" required></label>
+    <label>Senha <input type="password" id="senha" autocomplete="current-password" minlength="8" required></label>
+    <div id="loginMsg" class="msg"></div>
+    <button type="submit" class="primary" id="btnEntrar">Entrar</button>
+    <button type="button" class="link" id="btnCriar">Criar conta (primeiro acesso)</button>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <div>
+      <div class="title" id="hdrTitle">Hoje</div>
+      <div class="sub" id="hdrSub"></div>
+    </div>
+    <div class="hdr-actions">
+      <span id="sync" class="dot" title="Sincronizado"></span>
+      <button id="btnSair" class="link small">Sair</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="tab-hoje"></section>
+    <section id="tab-mes" class="hidden"></section>
+    <section id="tab-lancar" class="hidden"></section>
+    <section id="tab-contas" class="hidden"></section>
+    <section id="tab-config" class="hidden"></section>
+  </main>
+
+  <nav>
+    <button data-tab="hoje" class="active"><span>🏠</span>Hoje</button>
+    <button data-tab="mes"><span>📅</span>Mês</button>
+    <button data-tab="lancar" class="fab"><span>＋</span></button>
+    <button data-tab="contas"><span>🧾</span>Contas</button>
+    <button data-tab="config"><span>⚙️</span>Mais</button>
+  </nav>
+</div>
+
+<div id="modal" class="modal hidden"><div class="sheet" id="sheet"></div></div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
