@@ -42,7 +42,7 @@ const catOf = (l) => {
 
 /* ---------- estado ---------- */
 const state = {
-  lanc: [], fixas: [], cartoes: [],
+  lanc: [], fixas: [], cartoes: [], msgs: [], metas: [],
   cfg: { saldo_inicial: 0, limite_vermelho: 200, limite_amarelo: 600 },
   tab: "hoje", mes: null, todos: false, user: null,
 };
@@ -73,11 +73,15 @@ async function fetchAll(table, order) {
 async function loadAll() {
   setSync("busy");
   try {
-    const [lanc, fixas, cartoes, cfgRes] = await Promise.all([
+    const [lanc, fixas, cartoes, cfgRes, msgRes, metaRes] = await Promise.all([
       fetchAll("lancamentos", "data"), fetchAll("contas_fixas", "dia"), fetchAll("cartoes", "ano"),
       sb.from("config").select("*").maybeSingle(),
+      sb.from("julius_msgs").select("*").order("created_at", { ascending: false }).limit(60),
+      sb.from("metas").select("*").order("created_at", { ascending: true }),
     ]);
     state.lanc = lanc; state.fixas = fixas; state.cartoes = cartoes;
+    if (!msgRes.error) state.msgs = msgRes.data.reverse();
+    if (!metaRes.error) state.metas = metaRes.data;
     if (cfgRes.error) throw cfgRes.error;
     if (cfgRes.data) state.cfg = { ...state.cfg, ...cfgRes.data, saldo_inicial: +cfgRes.data.saldo_inicial, limite_vermelho: +cfgRes.data.limite_vermelho, limite_amarelo: +cfgRes.data.limite_amarelo };
     else await sb.from("config").insert({});
@@ -162,6 +166,7 @@ function render() {
   if (state.tab === "lancar") renderLancar();
   if (state.tab === "contas") renderContas();
   if (state.tab === "config") renderConfig();
+  if (state.tab === "julius") renderJulius();
 }
 
 function chartSvg(serie, hojeD) {
@@ -402,12 +407,147 @@ function renderConfig() {
   };
   $("#recarregar").onclick = loadAll;
   $("#sair2").onclick = sair;
+  configJulius();
+}
+
+/* ---------- Julius (agente) ---------- */
+const FN_URL = () => `${SUPABASE_URL}/functions/v1/julius`;
+const fmtWhen = (t) => new Date(t).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+async function chamarJulius(body) {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error("Sessão expirada. Entre de novo.");
+  const r = await fetch(FN_URL(), { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.erro === "FALTA_CHAVE" ? "O Julius ainda está sem a chave da Anthropic (falta cadastrar nos Secrets do Supabase)." : (j.erro || "erro " + r.status));
+  return j;
+}
+async function recarregarMsgs() {
+  const { data, error } = await sb.from("julius_msgs").select("*").order("created_at", { ascending: false }).limit(60);
+  if (!error) state.msgs = data.reverse();
+  if (state.tab === "julius") renderJulius();
+}
+function renderJulius() {
+  const box = $("#tab-julius");
+  const rascunho = $("#jInput") ? $("#jInput").value : "";
+  const ativas = state.metas.filter((m) => m.ativa);
+  box.innerHTML = `
+    <div class="card">
+      <div class="monthbar"><h2>🗣️ Julius</h2><button id="jBrief" class="link small">chamar a bronca agora</button></div>
+      <div id="jChat" class="chat">${state.msgs.length ? state.msgs.map((m) => `<div class="bubble ${m.role === "user" ? "u" : "j"} ${m.kind === "brief" ? "bf" : ""}"><div class="when">${m.role === "user" ? "Você" : m.kind === "brief" ? "Julius · bom dia" : "Julius"} · ${fmtWhen(m.created_at)}</div>${esc(m.content)}</div>`).join("") : '<p class="muted">Ele ainda não falou nada. Manda um "oi" e prepare o coração.</p>'}${state.jBusy ? '<div class="bubble j"><div class="when">Julius</div>…pensando em como te esculachar…</div>' : ""}</div>
+      <form id="jForm" class="jform"><input id="jInput" placeholder="Fala com o Julius… (ex.: gastei 35 no mercado hoje)" autocomplete="off"><button class="primary" id="jSend" ${state.jBusy ? "disabled" : ""}>Enviar</button></form>
+    </div>
+    <div class="card"><div class="monthbar"><h2>🎯 Metas</h2><button id="novaMeta" class="link">+ nova</button></div>
+      ${ativas.map((m) => { const p = Math.min(100, (Number(m.valor_atual) / Math.max(Number(m.valor_alvo), 1)) * 100); return `<div data-id="${m.id}" class="meta" style="cursor:pointer;margin-top:10px"><div class="row" style="border:0;padding:0"><span>${esc(m.nome)}</span><span class="val">${brl(m.valor_atual)} / ${brl(m.valor_alvo)}</span></div><div class="bar"><i style="width:${p.toFixed(1)}%"></i></div><div class="muted small">${p.toFixed(0)}%${m.prazo ? " · prazo " + m.prazo.split("-").reverse().join("/") : ""}</div></div>`; }).join("") || '<p class="muted">Sem metas. O Julius vai te cobrar quando você criar uma (ou peça pra ele criar no chat).</p>'}
+    </div>`;
+  const chat = $("#jChat"); chat.scrollTop = chat.scrollHeight;
+  if (rascunho) $("#jInput").value = rascunho;
+  $("#jForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const txt = $("#jInput").value.trim(); if (!txt || state.jBusy) return;
+    $("#jInput").value = "";
+    state.msgs.push({ role: "user", kind: "chat", content: txt, created_at: new Date().toISOString() });
+    state.jBusy = true; renderJulius();
+    try { await chamarJulius({ mode: "chat", message: txt }); await loadAll(); }
+    catch (err) { toast(err.message, 6000); }
+    state.jBusy = false; await recarregarMsgs();
+  };
+  $("#jBrief").onclick = async () => {
+    if (state.jBusy) return;
+    state.jBusy = true; renderJulius();
+    try { await chamarJulius({ mode: "brief" }); } catch (err) { toast(err.message, 6000); }
+    state.jBusy = false; await recarregarMsgs();
+  };
+  $("#novaMeta").onclick = () => formMeta({});
+  $$("#tab-julius .meta").forEach((el) => (el.onclick = () => formMeta(state.metas.find((m) => m.id === el.dataset.id))));
+}
+function formMeta(m) {
+  const novo = !m.id;
+  openModal(`<h2>${novo ? "Nova meta" : "Editar meta"}</h2>
+    <label>Nome <input id="mNome" value="${esc(m.nome || "")}" placeholder="ex.: Reserva de emergência"></label>
+    <label>Valor da meta (R$) <input id="mAlvo" inputmode="decimal" value="${m.valor_alvo != null ? String(m.valor_alvo).replace(".", ",") : ""}"></label>
+    <label>Já guardado (R$) <input id="mAtual" inputmode="decimal" value="${m.valor_atual != null ? String(m.valor_atual).replace(".", ",") : "0"}"></label>
+    <label>Prazo <input id="mPrazo" type="date" value="${m.prazo || ""}"></label>
+    <label><span><input type="checkbox" id="mAtiva" ${m.ativa !== false ? "checked" : ""} style="width:auto"> Ativa</span></label>
+    <div class="actions"><button id="mSalvar" class="primary">Salvar</button>${novo ? "" : '<button id="mExcluir" class="danger">Excluir</button>'}<button id="mFechar">Cancelar</button></div>`);
+  $("#mFechar").onclick = closeModal;
+  const num = (id) => parseFloat(String($(id).value).replace(/\./g, "").replace(",", "."));
+  if (!novo) $("#mExcluir").onclick = async () => {
+    if (!confirm("Excluir esta meta?")) return;
+    const { error } = await sb.from("metas").delete().eq("id", m.id);
+    if (error) return toast("Erro: " + error.message);
+    state.metas = state.metas.filter((x) => x.id !== m.id); closeModal(); render();
+  };
+  $("#mSalvar").onclick = async () => {
+    const rec = { nome: $("#mNome").value.trim(), valor_alvo: num("#mAlvo"), valor_atual: num("#mAtual") || 0, prazo: $("#mPrazo").value || null, ativa: $("#mAtiva").checked };
+    if (!rec.nome || !(rec.valor_alvo >= 0)) return toast("Confira nome e valor da meta");
+    const q = novo ? sb.from("metas").insert(rec).select().single() : sb.from("metas").update(rec).eq("id", m.id).select().single();
+    const { data, error } = await q;
+    if (error) return toast("Erro: " + error.message);
+    state.metas = state.metas.filter((x) => x.id !== data.id).concat(data);
+    closeModal(); toast("Salvo ✓"); render();
+  };
+}
+
+const b64u = (s) => { const r = atob((s + "=".repeat((4 - (s.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from([...r].map((c) => c.charCodeAt(0))); };
+async function ativarPush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return toast("Sem suporte a notificações aqui. No iPhone, abra o app pela Tela de Início (Compartilhar → Adicionar à Tela de Início).", 7000);
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") return toast("Permissão negada. Libere nas configurações do aparelho.", 5000);
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(window.CF_CONFIG.VAPID_PUBLIC) });
+    const j = sub.toJSON();
+    const { error } = await sb.from("push_subs").upsert({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth }, { onConflict: "endpoint" });
+    if (error) throw error;
+    toast("Notificações ativadas neste aparelho ✓", 4000);
+  } catch (e) { toast("Não consegui ativar: " + (e.message || e), 6000); }
+}
+function scriptWidget() {
+  const url = `${FN_URL()}?t=${state.cfg.widget_token || ""}`;
+  return [
+    'const URL_JULIUS = "' + url + '";',
+    'let d;',
+    'try { d = await new Request(URL_JULIUS).loadJSON(); } catch (e) { d = { saldo: 0, faixa: "?", julius: "Sem conexão. Nem pra isso você presta." }; }',
+    'const cores = { VERDE: "#22c55e", AMARELO: "#eab308", VERMELHO: "#ef4444" };',
+    'const reais = (v) => "R$ " + Number(v).toFixed(2).replace(".", ",");',
+    'const w = new ListWidget();',
+    'w.backgroundColor = new Color("#0f1115");',
+    'w.url = "https://lahelandim.github.io/controle-financeiro/?tab=julius";',
+    'const t = w.addText("JULIUS · saldo hoje"); t.font = Font.boldSystemFont(11); t.textColor = new Color("#8b93a3");',
+    'const s = w.addText(reais(d.saldo)); s.font = Font.boldSystemFont(26); s.textColor = new Color(cores[d.faixa] || "#ffffff");',
+    'w.addSpacer(4);',
+    'const m = w.addText(d.julius); m.font = Font.systemFont(11); m.textColor = Color.white(); m.minimumScaleFactor = 0.6;',
+    'w.refreshAfterDate = new Date(Date.now() + 30 * 60 * 1000);',
+    'if (config.runsInWidget) { Script.setWidget(w); } else { await w.presentMedium(); }',
+    'Script.complete();',
+  ].join("\n");
+}
+function configJulius() {
+  $("#tab-config").insertAdjacentHTML("beforeend", `
+    <div class="card"><h2>🔔 Notificações do Julius</h2>
+      <p class="muted small">Todo dia às 8h ele manda a bronca no seu celular. No iPhone, precisa abrir o app pela Tela de Início (Compartilhar → Adicionar à Tela de Início) e ter o iOS 16.4 ou mais novo.</p>
+      <div class="actions"><button id="btnPush" class="primary">Ativar neste aparelho</button><button id="btnPushTeste">Testar</button></div>
+    </div>
+    <div class="card"><h2>📱 Widget do iPhone</h2>
+      <p class="muted small">1) Instale o app grátis <b>Scriptable</b> (App Store). 2) Toque em copiar abaixo. 3) No Scriptable, crie um script novo, cole e salve. 4) Na tela inicial: segurar → + → Scriptable → escolha o script. O link tem uma chave só sua: não compartilhe.</p>
+      <div class="actions"><button id="btnCopiarWidget" class="primary">Copiar script do widget</button></div>
+    </div>`);
+  $("#btnPush").onclick = ativarPush;
+  $("#btnPushTeste").onclick = async () => {
+    try { const j = await chamarJulius({ mode: "push_teste" }); toast(j.enviados ? "Enviado! Olhe as notificações." : "Nenhum aparelho ativado ainda.", 4000); }
+    catch (e) { toast(e.message, 5000); }
+  };
+  $("#btnCopiarWidget").onclick = async () => {
+    try { await navigator.clipboard.writeText(scriptWidget()); toast("Script copiado ✓ Agora cole no Scriptable.", 5000); }
+    catch (_) { openModal(`<h2>Script do widget</h2><textarea rows="12" id="wTxt" style="font-size:12px">${esc(scriptWidget())}</textarea><div class="actions"><button id="wFechar">Fechar</button></div>`); $("#wFechar").onclick = closeModal; $("#wTxt").select(); }
+  };
 }
 
 /* ---------- navegacao ---------- */
-const TITULOS = { hoje: "Hoje", mes: "Mês", lancar: "Novo lançamento", contas: "Contas e cartões", config: "Mais" };
+const TITULOS = { hoje: "Hoje", mes: "Mês", lancar: "Novo lançamento", contas: "Contas e cartões", config: "Mais", julius: "Julius" };
 function showTab() {
-  ["hoje", "mes", "lancar", "contas", "config"].forEach((t) => $("#tab-" + t).classList.toggle("hidden", t !== state.tab));
+  ["hoje", "mes", "lancar", "contas", "config", "julius"].forEach((t) => $("#tab-" + t).classList.toggle("hidden", t !== state.tab));
   $$("nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab));
   $("#hdrTitle").textContent = TITULOS[state.tab];
   window.scrollTo(0, 0); render();
@@ -422,6 +562,8 @@ async function mostrarApp(user) {
 }
 async function sair() { await sb.auth.signOut(); state.user = null; state.lanc = []; mostrarLogin(); }
 $("#btnSair").onclick = sair;
+$("#btnJulius").onclick = () => { state.tab = "julius"; showTab(); };
+{ const q = new URLSearchParams(location.search).get("tab"); if (q && TITULOS[q]) state.tab = q; }
 
 $("#loginForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -449,6 +591,7 @@ function assinarTempoReal() {
   canal = sb.channel("cf-sync")
     .on("postgres_changes", { event: "*", schema: "public", table: "lancamentos" }, agenda)
     .on("postgres_changes", { event: "*", schema: "public", table: "contas_fixas" }, agenda)
+    .on("postgres_changes", { event: "INSERT", schema: "public", table: "julius_msgs" }, () => { if (!state.jBusy) recarregarMsgs(); })
     .subscribe((s) => { if (s === "SUBSCRIBED") setSync("ok"); });
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden && state.user) loadAll(); });
