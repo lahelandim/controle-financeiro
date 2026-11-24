@@ -508,7 +508,9 @@ function scriptWidget() {
   return [
     'const URL_JULIUS = "' + url + '";',
     'let d;',
-    'try { d = await new Request(URL_JULIUS).loadJSON(); } catch (e) { d = { saldo: 0, faixa: "?", julius: "Sem conexão. Nem pra isso você presta." }; }',
+    'try { d = await new Request(URL_JULIUS).loadJSON(); } catch (e) { d = {}; }',
+    'if (!d || typeof d.saldo === "undefined") { d = { saldo: 0, faixa: "?", julius: "Sem dados. Confira o link do script (token) ou a conexão." }; }',
+    'd.julius = String(d.julius || "");',
     'const cores = { VERDE: "#22c55e", AMARELO: "#eab308", VERMELHO: "#ef4444" };',
     'const reais = (v) => "R$ " + Number(v).toFixed(2).replace(".", ",");',
     'const w = new ListWidget();',
@@ -539,7 +541,10 @@ function configJulius() {
     catch (e) { toast(e.message, 5000); }
   };
   $("#btnCopiarWidget").onclick = async () => {
-    try { await navigator.clipboard.writeText(scriptWidget()); toast("Script copiado ✓ Agora cole no Scriptable.", 5000); }
+    try {
+      if (!state.cfg.widget_token) { const { data } = await sb.from("config").select("widget_token").maybeSingle(); if (data) state.cfg.widget_token = data.widget_token; }
+      if (!state.cfg.widget_token) { toast("Sem token do widget. Recarregue o app e tente de novo.", 5000); return; }
+      await navigator.clipboard.writeText(scriptWidget()); toast("Script copiado ✓ Agora cole no Scriptable.", 5000); }
     catch (_) { openModal(`<h2>Script do widget</h2><textarea rows="12" id="wTxt" style="font-size:12px">${esc(scriptWidget())}</textarea><div class="actions"><button id="wFechar">Fechar</button></div>`); $("#wFechar").onclick = closeModal; $("#wTxt").select(); }
   };
 }
